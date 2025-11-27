@@ -1,0 +1,64 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String  @id @default(cuid())
+  email     String  @unique
+  password  String
+  patients  Patient[]
+  services  Service[]
+  createdAt DateTime @default(now())
+}
+
+model Patient {
+  id                  String   @id @default(cuid())
+  ownerId             String
+  owner               User     @relation(fields: [ownerId], references: [id])
+  nombres             String?
+  apellidos           String?
+  sexo                String?  @default("M")
+  dni                 String?
+  fechaNacimiento     String?
+  edad                String?
+  lugarNacimiento     String?
+  lugarProcedencia    String?
+  raza                String?
+  domicilio           String?
+  telefono            String?
+  email               String?
+  estadoCivil         String?
+  gradoInstruccion    String?
+  profesion           String?
+  ocupacion           String?
+  centroEstudios      String?
+  direccionCentroEstudios String?
+  religion            String?
+  emergenciaNombre    String?
+  emergenciaParentesco String?
+  emergenciaDomicilio String?
+  emergenciaTelefono  String?
+  medicoTratante      String?
+  antecedentes        String?
+  odontogram_initial  Json?
+  progress_records    Json?
+  treatments          Json?
+  general_attachments Json?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+model Service {
+  id        String   @id @default(cuid())
+  ownerId   String
+  owner     User     @relation(fields: [ownerId], references: [id])
+  name      String
+  price     Float
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
