@@ -8,10 +8,11 @@ import { Resend } from 'resend'
 const app = Fastify()
 const prisma = new PrismaClient()
 const resend = new Resend(process.env.RESEND_API_KEY)
-const corsOrigin = process.env.CORS_ORIGIN
-  ? (process.env.CORS_ORIGIN === '*' ? true : process.env.CORS_ORIGIN.split(',').map(s => s.trim()))
+const corsOriginEnv = process.env.CORS_ORIGIN
+const corsOrigin = corsOriginEnv
+  ? (corsOriginEnv.includes('*') ? true : corsOriginEnv.split(',').map(s => s.trim()))
   : ['http://localhost:5173', 'http://localhost:5174']
-await app.register(cors, { origin: corsOrigin })
+await app.register(cors, { origin: corsOrigin, methods: ['GET','POST','PUT','DELETE','OPTIONS'], allowedHeaders: ['Content-Type','Authorization'] })
 
 const JWT_SECRET = process.env.JWT_SECRET || 'change-me'
 const LOGIN_EMAIL = process.env.LOGIN_EMAIL || 'odontokaren@odonto.com'
