@@ -13,6 +13,11 @@ model User {
   password  String
   patients  Patient[]
   services  Service[]
+  appointments Appointment[]
+  reminders   Reminder[]
+  messageLogs MessageLog[]
+  reminderRules ReminderRule[]
+  controlSchedules ControlSchedule[]
   createdAt DateTime @default(now())
 }
 
@@ -49,6 +54,11 @@ model Patient {
   progress_records    Json?
   treatments          Json?
   general_attachments Json?
+  whatsappConsent     Boolean  @default(false)
+  whatsappOptOutAt    DateTime?
+  appointments        Appointment[]
+  reminders           Reminder[]
+  controlSchedules    ControlSchedule[]
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }
@@ -59,6 +69,100 @@ model Service {
   owner     User     @relation(fields: [ownerId], references: [id])
   name      String
   price     Float
+  appointments Appointment[]
+  reminderRules ReminderRule[]
+  reminders   Reminder[]
+  controlSchedules ControlSchedule[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model Appointment {
+  id        String   @id @default(cuid())
+  ownerId   String
+  owner     User     @relation(fields: [ownerId], references: [id])
+  patientId String
+  patient   Patient  @relation(fields: [patientId], references: [id])
+  serviceId String?
+  service   Service? @relation(fields: [serviceId], references: [id])
+  title     String
+  startAt   DateTime
+  endAt     DateTime?
+  status    String   @default("scheduled")
+  notes     String?
+  reminders Reminder[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ReminderRule {
+  id           String   @id @default(cuid())
+  ownerId      String
+  owner        User     @relation(fields: [ownerId], references: [id])
+  serviceId    String?
+  service      Service? @relation(fields: [serviceId], references: [id])
+  matchKeywords Json?
+  delayDays    Int
+  templateText String
+  enabled      Boolean  @default(true)
+  hourStart    Int      @default(9)
+  hourEnd      Int      @default(19)
+  daysOfWeek   Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Reminder {
+  id            String   @id @default(cuid())
+  ownerId       String
+  owner         User     @relation(fields: [ownerId], references: [id])
+  patientId     String
+  patient       Patient  @relation(fields: [patientId], references: [id])
+  appointmentId String?
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id])
+  serviceId     String?
+  service       Service? @relation(fields: [serviceId], references: [id])
+  performedAt   DateTime?
+  dueAt         DateTime
+  status        String   @default("pending")
+  attempts      Int      @default(0)
+  lastAttemptAt DateTime?
+  channel       String   @default("whatsapp")
+  messageText   String?
+  messageLogs   MessageLog[]
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model MessageLog {
+  id                String   @id @default(cuid())
+  ownerId           String
+  owner             User     @relation(fields: [ownerId], references: [id])
+  reminderId        String?
+  reminder          Reminder? @relation(fields: [reminderId], references: [id])
+  provider          String   @default("wazend")
+  toPhone           String
+  content           String?
+  providerMessageId String?
+  status            String   @default("queued")
+  error             String?
+  sentAt            DateTime?
+  createdAt         DateTime @default(now())
+}
+
+model ControlSchedule {
+  id         String   @id @default(cuid())
+  ownerId    String
+  owner      User     @relation(fields: [ownerId], references: [id])
+  patientId  String
+  patient    Patient  @relation(fields: [patientId], references: [id])
+  serviceId  String?
+  service    Service? @relation(fields: [serviceId], references: [id])
+  frequency  String   @default("monthly")
+  hour       Int      @default(10)
+  nextAt     DateTime
+  status     String   @default("active")
+  notes      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 }
