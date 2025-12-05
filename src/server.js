@@ -11,7 +11,7 @@ const resend = new Resend(process.env.RESEND_API_KEY)
 const corsOriginEnv = process.env.CORS_ORIGIN
 const corsOrigin = corsOriginEnv
   ? (corsOriginEnv.includes('*') ? true : corsOriginEnv.split(',').map(s => s.trim()))
-  : ['http://localhost:5173', 'http://localhost:5174']
+  : ['http://localhost:5173', 'http://localhost:5174' , "https://odontokaren.site"]
 await app.register(cors, { origin: corsOrigin, methods: ['GET','POST','PUT','DELETE','OPTIONS'], allowedHeaders: ['Content-Type','Authorization'] })
 
 const JWT_SECRET = process.env.JWT_SECRET || 'change-me'
@@ -389,6 +389,98 @@ app.post('/api/send-email', async (req, reply) => {
   } catch (e) {
     console.error('send_email_failed', e)
     reply.code(500).send({ error: 'send_email_failed', code: e?.code || 'UNKNOWN' })
+  }
+})
+
+app.post('/api/ai/extract-patient', async (req, reply) => {
+  const userId = authenticate(req, reply); if (!userId) return
+  try {
+    const apiKey = process.env.OPENAI_API_KEY
+    if (!apiKey) return reply.code(400).send({ error: 'openai_key_missing' })
+    const model = process.env.OPENAI_MODEL || 'gpt-4o-mini'
+    const images = Array.isArray(req.body?.images) ? req.body.images.slice(0, 20) : []
+    if (!images.length) return reply.code(400).send({ error: 'images_required' })
+    const content = [
+      { type: 'text', text: 'Extrae datos del paciente y la evolución/pagos desde estas imágenes de historial clínico. Devuelve JSON con las claves: general, exam, treatments. Fechas en formato YYYY-MM-DD. Sexo como M/F. DNI 8 dígitos. treatments debe incluir visitas (type=visit, date, description, cost) y pagos (type=payment, date, description, payment). Si no hay dato, usar vacío o cero. No incluyas texto fuera del JSON. Si "Nombres y apellidos" están juntos en una línea (manuscrito o impreso), sepáralos inteligentemente: usualmente la primera palabra o dos son Nombres y las últimas dos son Apellidos. Ej: "Catalina Alcantara Armas" -> nombres="Catalina", apellidos="Alcantara Armas".' }
+    ]
+    for (const img of images) {
+      const url = String(img?.url || '').trim()
+      if (url) content.push({ type: 'image_url', image_url: { url } })
+    }
+    const body = {
+      model,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: 'Eres un asistente experto en digitalización de historias clínicas manuscritas en español. Tu prioridad es transcribir exactamente nombres y apellidos, separándolos correctamente aunque estén juntos. Entiendes abreviaturas médicas.' },
+        { role: 'user', content }
+      ]
+    }
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      body: JSON.stringify(body)
+    })
+    const data = await res.json()
+    if (!res.ok) return reply.code(500).send({ error: 'openai_failed', detail: data })
+    const txt = data?.choices?.[0]?.message?.content || ''
+    let parsed = null
+    try { parsed = JSON.parse(txt) } catch { parsed = null }
+    if (!parsed || typeof parsed !== 'object') return reply.code(500).send({ error: 'parse_failed' })
+    const general = parsed.general || {}
+    const exam = parsed.exam || {}
+    const treatments = Array.isArray(parsed.treatments) ? parsed.treatments : []
+    const mapSex = (s) => {
+      const v = String(s || '').toLowerCase()
+      if (!v) return 'M'
+      if (v.startsWith('m')) return 'M'
+      if (v.startsWith('f')) return 'F'
+      return v.toUpperCase()
+    }
+    const normDate = (s) => {
+      const str = String(s || '').trim()
+      const m1 = str.match(/(\d{4})-(\d{2})-(\d{2})/)
+      const m2 = str.match(/(\d{2})\/(\d{2})\/(\d{4})/)
+      if (m1) return `${m1[1]}-${m1[2]}-${m1[3]}`
+      if (m2) return `${m2[3]}-${m2[2]}-${m2[1]}`
+      return str
+    }
+    const cleanGeneral = {
+      nombres: String(general.nombres || ''),
+      apellidos: String(general.apellidos || ''),
+      sexo: mapSex(general.sexo),
+      dni: String(general.dni || '').replace(/[^0-9]/g, '').slice(0, 8),
+      fechaNacimiento: normDate(general.fechaNacimiento || general.fecha_nacimiento),
+      edad: String(general.edad || ''),
+      lugarNacimiento: String(general.lugarNacimiento || ''),
+      lugarProcedencia: String(general.lugarProcedencia || ''),
+      domicilio: String(general.domicilio || ''),
+      telefono: String(general.telefono || '').replace(/[^0-9]/g, ''),
+      email: String(general.email || ''),
+      estadoCivil: String(general.estadoCivil || ''),
+      gradoInstruccion: String(general.gradoInstruccion || ''),
+      profesion: String(general.profesion || ''),
+      ocupacion: String(general.ocupacion || ''),
+      centroEstudios: String(general.centroEstudios || ''),
+      direccionCentroEstudios: String(general.direccionCentroEstudios || ''),
+      religion: String(general.religion || ''),
+      medicoTratante: String(general.medicoTratante || ''),
+      emergenciaNombre: String(general.emergenciaNombre || ''),
+      emergenciaParentesco: String(general.emergenciaParentesco || ''),
+      emergenciaDomicilio: String(general.emergenciaDomicilio || ''),
+      emergenciaTelefono: String(general.emergenciaTelefono || '').replace(/[^0-9]/g, '')
+    }
+    const cleanedTreatments = treatments.map(t => ({
+      id: String(t.id || `${Date.now()}_${Math.random().toString(36).slice(2)}`),
+      type: String(t.type || '').toLowerCase() === 'payment' ? 'payment' : 'visit',
+      date: normDate(t.date),
+      description: String(t.description || ''),
+      cost: Number(t.cost || 0),
+      payment: Number(t.payment || t.amount || 0)
+    }))
+    return { general: cleanGeneral, exam, treatments: cleanedTreatments }
+  } catch (e) {
+    console.error('ai_extract_failed', e)
+    reply.code(500).send({ error: 'ai_extract_failed', code: e?.code || 'UNKNOWN' })
   }
 })
 
