@@ -5,7 +5,7 @@ import jwt from 'jsonwebtoken'
 import { PrismaClient } from '@prisma/client'
 import { Resend } from 'resend'
 
-const app = Fastify()
+const app = Fastify({ bodyLimit: Number(process.env.BODY_LIMIT || 15 * 1024 * 1024) })
 const prisma = new PrismaClient()
 const resend = new Resend(process.env.RESEND_API_KEY)
 const corsOriginEnv = process.env.CORS_ORIGIN
@@ -258,7 +258,7 @@ app.post('/api/auth/login', async (req, reply) => {
 app.get('/api/patients', async (req, reply) => {
   const userId = authenticate(req, reply); if (!userId) return
   try {
-    const list = await prisma.$queryRaw`SELECT * FROM "Patient" WHERE "ownerId" = ${userId} ORDER BY "createdAt" DESC`
+    const list = await prisma.$queryRaw`SELECT * FROM "Patient" WHERE "ownerId" = ${userId} AND ("isDeleted" = false OR "isDeleted" IS NULL) ORDER BY "createdAt" DESC`
     return list
   } catch (e) {
     console.error('list_failed', e)
@@ -313,19 +313,37 @@ app.delete('/api/patients/:id', async (req, reply) => {
     const { id } = req.params
     const patient = await prisma.patient.findUnique({ where: { id } })
     if (!patient || patient.ownerId !== userId) return reply.code(404).send({ error: 'patient_not_found' })
-    const reminders = await prisma.reminder.findMany({ where: { patientId: id }, select: { id: true } })
-    const reminderIds = reminders.map(r => r.id)
-    if (reminderIds.length) {
-      await prisma.messageLog.deleteMany({ where: { reminderId: { in: reminderIds } } })
-    }
-    await prisma.reminder.deleteMany({ where: { patientId: id } })
-    await prisma.appointment.deleteMany({ where: { patientId: id } })
-    await prisma.controlSchedule.deleteMany({ where: { patientId: id } })
-    await prisma.patient.delete({ where: { id } })
+    await prisma.patient.update({ where: { id }, data: { isDeleted: true, deletedAt: new Date() } })
     return { ok: true }
   } catch (e) {
     console.error('delete_failed', e)
     reply.code(500).send({ error: 'delete_failed', code: e?.code || 'UNKNOWN' })
+  }
+})
+
+app.get('/api/patients/deleted', async (req, reply) => {
+  const userId = authenticate(req, reply); if (!userId) return
+  try {
+    const list = await prisma.$queryRaw`SELECT * FROM "Patient" WHERE "ownerId" = ${userId} AND "isDeleted" = true ORDER BY "deletedAt" DESC NULLS LAST`
+    return list
+  } catch (e) {
+    console.error('trash_list_failed', e)
+    reply.code(500).send({ error: 'trash_list_failed', code: e?.code || 'UNKNOWN' })
+  }
+})
+
+app.post('/api/patients/:id/recover', async (req, reply) => {
+  const userId = authenticate(req, reply); if (!userId) return
+  try {
+    const { id } = req.params
+    const patient = await prisma.patient.findUnique({ where: { id } })
+    if (!patient || patient.ownerId !== userId) return reply.code(404).send({ error: 'patient_not_found' })
+    const updated = await prisma.patient.update({ where: { id }, data: { isDeleted: false, deletedAt: null } })
+    const fullRow = await prisma.$queryRaw`SELECT * FROM "Patient" WHERE "id" = ${id}`
+    return Array.isArray(fullRow) && fullRow[0] ? fullRow[0] : updated
+  } catch (e) {
+    console.error('recover_failed', e)
+    reply.code(500).send({ error: 'recover_failed', code: e?.code || 'UNKNOWN' })
   }
 })
 
@@ -401,7 +419,7 @@ app.post('/api/ai/extract-patient', async (req, reply) => {
     const images = Array.isArray(req.body?.images) ? req.body.images.slice(0, 20) : []
     if (!images.length) return reply.code(400).send({ error: 'images_required' })
     const content = [
-      { type: 'text', text: 'Extrae datos del paciente y la evolución/pagos desde estas imágenes de historial clínico. Devuelve JSON con las claves: general, exam, treatments. Fechas en formato YYYY-MM-DD. Sexo como M/F. DNI 8 dígitos. treatments debe incluir visitas (type=visit, date, description, cost) y pagos (type=payment, date, description, payment). Si no hay dato, usar vacío o cero. No incluyas texto fuera del JSON. Si "Nombres y apellidos" están juntos en una línea (manuscrito o impreso), sepáralos inteligentemente: usualmente la primera palabra o dos son Nombres y las últimas dos son Apellidos. Ej: "Catalina Alcantara Armas" -> nombres="Catalina", apellidos="Alcantara Armas".' }
+      { type: 'text', text: 'Extrae datos del paciente y la evolución/pagos desde estas imágenes de historial clínico. Devuelve JSON con las claves: general, exam, treatments. En general prioriza: nombres, apellidos, sexo, dni, fechaNacimiento, edad, lugarNacimiento, lugarProcedencia, domicilio, telefono, email, estadoCivil, gradoInstruccion, profesion, ocupacion, centroEstudios, direccionCentroEstudios, religion, medicoTratante, emergenciaNombre, emergenciaParentesco, emergenciaDomicilio, emergenciaTelefono. Fechas en formato YYYY-MM-DD. Sexo como M/F. DNI 8 dígitos. Para treatments, incluye visitas (type=visit, date, description, cost) y pagos (type=payment, date, description, payment); si hay tabla de plan de tratamiento, conviértela en estos registros. Si no hay dato, usar vacío o cero. No incluyas texto fuera del JSON. Si "Nombres y apellidos" están juntos en una línea (manuscrito o impreso), sepáralos inteligentemente: usualmente la primera palabra o dos son Nombres y las últimas dos son Apellidos. Ej: "Catalina Alcantara Armas" -> nombres="Catalina", apellidos="Alcantara Armas".' }
     ]
     for (const img of images) {
       const url = String(img?.url || '').trim()
@@ -821,5 +839,24 @@ setInterval(async () => {
     }
   } catch (e) { }
 }, 60000)
+async function purgeOldDeletedPatients() {
+  try {
+    const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+    const olds = await prisma.patient.findMany({ where: { isDeleted: true, deletedAt: { lt: cutoff } } })
+    for (const p of olds) {
+      const id = p.id
+      const reminders = await prisma.reminder.findMany({ where: { patientId: id }, select: { id: true } })
+      const reminderIds = reminders.map(r => r.id)
+      if (reminderIds.length) {
+        await prisma.messageLog.deleteMany({ where: { reminderId: { in: reminderIds } } })
+      }
+      await prisma.reminder.deleteMany({ where: { patientId: id } })
+      await prisma.appointment.deleteMany({ where: { patientId: id } })
+      await prisma.controlSchedule.deleteMany({ where: { patientId: id } })
+      await prisma.patient.delete({ where: { id } })
+    }
+  } catch (e) { }
+}
+setInterval(() => { purgeOldDeletedPatients().catch(() => {}) }, 3600000)
 const addr = await app.listen({ port: process.env.PORT ? Number(process.env.PORT) : 4000, host: '0.0.0.0' })
 console.log('listening', addr)
